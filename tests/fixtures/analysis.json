@@ -1,0 +1,39 @@
+{
+  "tldr": "The fixture describes an AI evaluation method. Its claims are available only in the abstract. Detailed experimental conditions are unknown.",
+  "why_should_i_care": "Interpretation: evaluation quality affects engineering decisions.",
+  "timeline": [],
+  "problem": "Fact: the abstract describes evaluation.",
+  "core_idea": "Unknown",
+  "whats_new": "Unknown",
+  "how_it_works": "Unknown",
+  "comparisons": "Unknown",
+  "key_results": "Unknown",
+  "beats_previous_work": "Unknown",
+  "limitations": "Evidence is limited to the abstract.",
+  "authors_limitations": "Unknown",
+  "analysis_limitations": "Interpretation: the available abstract cannot establish comparison fairness.",
+  "reproducibility": "Unknown",
+  "reproducibility_reason": "Code, data, models and compute requirements are unknown.",
+  "why_it_matters": "Interpretation: careful evaluation may improve research decisions.",
+  "what_next": "Speculation: independent reproduction could test the proposed evaluation.",
+  "sources": [
+    {
+      "title": "Evaluation for AI",
+      "url": "https://arxiv.org/abs/2610.00001",
+      "source_type": "paper"
+    }
+  ],
+  "section_sources": [
+    {
+      "section": "problem",
+      "sources": [
+        {
+          "title": "Evaluation for AI",
+          "url": "https://arxiv.org/abs/2610.00001",
+          "source_type": "paper"
+        }
+      ]
+    }
+  ],
+  "questions_for_michael": ["What would you independently reproduce?"]
+}

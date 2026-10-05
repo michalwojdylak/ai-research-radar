@@ -1,0 +1,106 @@
+name: AI Research Radar
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      create_pr:
+        description: Create a draft pull request for generated content
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: research-radar
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+      HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
+      OPENALEX_EMAIL: ${{ secrets.OPENALEX_EMAIL }}
+      DRY_RUN: "true"
+      RESEARCH_DAYS: "7"
+      TOP_PAPERS: "10"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Restore operational history and request caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/radar.sqlite3
+            .cache/research-radar
+          key: radar-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            radar-state-${{ runner.os }}-
+      - run: uv sync --locked
+      - name: Prepare review branch without overwriting human edits
+        if: github.event_name == 'schedule' || inputs.create_pr
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="research-radar/automated-drafts"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            git switch -c "$branch" --track "origin/$branch"
+            git merge --no-edit "origin/$BASE_BRANCH"
+          else
+            git switch -c "$branch"
+          fi
+      - name: Check implementation
+        run: |
+          uv run ruff check .
+          uv run mypy
+          uv run pytest -q
+      - name: Discover, enrich, rank, analyze, critique, and generate drafts
+        run: uv run research-radar run --dry-run
+      - name: Validate canonical output
+        run: uv run research-radar validate
+      - name: Save generated content as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-radar-content
+          path: |
+            data/papers
+            data/rankings
+            data/articles/drafts
+          retention-days: 30
+      - name: Commit and open a draft review PR
+        if: github.event_name == 'schedule' || inputs.create_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          branch="research-radar/automated-drafts"
+          git add data/papers data/rankings data/articles/drafts
+          if git diff --cached --quiet; then
+            echo "No generated content changes."
+            exit 0
+          fi
+          git commit -m "Update AI Research Radar review drafts" \
+            -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin "$branch"
+          existing="$(gh pr list --head "$branch" --base "$BASE_BRANCH" --state open --json number --jq 'length')"
+          if [ "$existing" -eq 0 ]; then
+            gh pr create --draft --head "$branch" --base "$BASE_BRANCH" \
+              --title "AI Research Radar: new research drafts" \
+              --body "AI-assisted research drafts for human review. Check primary sources, critic issues, numerical claims, and ranking coverage. Michał's take remains human-authored. Merging this PR does not automatically publish to the website."
+          fi

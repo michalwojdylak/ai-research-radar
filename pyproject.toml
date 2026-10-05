@@ -1,0 +1,50 @@
+[project]
+name = "ai-research-radar"
+version = "0.1.0"
+description = "Discover, rank, and critically analyze AI research for human editorial review."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "feedparser>=6.0.11",
+    "httpx>=0.28",
+    "openai>=1.68",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.8",
+    "pymupdf>=1.25",
+    "python-dotenv>=1.0",
+    "rich>=13.9",
+    "tenacity>=9.0",
+]
+
+[project.scripts]
+research-radar = "research_radar.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.25", "ruff>=0.11", "mypy>=1.15"]
+
+[tool.uv.build-backend]
+module-name = "research_radar"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["research_radar"]
+
+[[tool.mypy.overrides]]
+module = ["pymupdf", "pymupdf.*", "feedparser"]
+ignore_missing_imports = true
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
