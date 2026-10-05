@@ -53,6 +53,16 @@ class PaperScores(RadarModel):
     importance_breakdown: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     trending_breakdown: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     overall_breakdown: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
+    publication_score: float | None = Field(default=None, ge=0, le=100)
+    retrospective_score: float | None = Field(default=None, ge=0, le=100)
+    retrospective_breakdown: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
+    scope: Literal["current_observation", "publication", "retrospective"] = "current_observation"
+    scored_at: datetime | None = None
+    publication_data_cutoff: datetime | None = None
+    retrospective_data_cutoff: datetime | None = None
+    publication_basis: (
+        Literal["historical_observation", "publication_document_proxy", "unavailable"] | None
+    ) = None
 
 
 class PaperRecord(RadarModel):
@@ -61,6 +71,10 @@ class PaperRecord(RadarModel):
     enrichment: Enrichment = Field(default_factory=Enrichment)
     metrics: PaperMetrics = Field(default_factory=PaperMetrics)
     scores: PaperScores = Field(default_factory=PaperScores)
+    relevance_observed_at: datetime | None = None
+    relevance_primary_only: bool = False
+    relevance_prompt_version: str | None = None
+    relevance_model: str | None = None
 
 
 class RankingEntry(RadarModel):

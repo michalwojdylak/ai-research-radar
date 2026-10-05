@@ -1,0 +1,194 @@
+name: AI Research Radar historical backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: Inclusive start date (YYYY-MM-DD)
+        type: string
+        default: "2023-01-01"
+        required: true
+      to_date:
+        description: Inclusive end date (YYYY-MM-DD); empty means today UTC
+        type: string
+        default: ""
+      skip_analysis:
+        description: Skip deep analysis (no new LLM calls unless classify is enabled)
+        type: boolean
+        default: true
+      skip_enrichment:
+        description: Skip metadata enrichment to conserve provider quotas
+        type: boolean
+        default: false
+      classify:
+        description: Enable inexpensive LLM classification (requires cost confirmation)
+        type: boolean
+        default: false
+      confirm_expensive:
+        description: Confirm explicitly requested LLM costs
+        type: boolean
+        default: false
+      publication_proxy:
+        description: Allow labelled approximate historical primary-document quality estimates
+        type: boolean
+        default: false
+      workers:
+        description: Bounded backfill workers
+        type: choice
+        options: ["1", "2", "4", "8", "16"]
+        default: "4"
+      create_pr:
+        description: Create or update a draft review PR (never approve or publish)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: research-radar
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+      HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
+      OPENALEX_EMAIL: ${{ secrets.OPENALEX_EMAIL }}
+      DRY_RUN: "true"
+      TOP_PAPERS: "10"
+    steps:
+      - name: Reject unconfirmed LLM spending before initializing the pipeline
+        env:
+          SKIP_ANALYSIS: ${{ inputs.skip_analysis }}
+          CLASSIFY: ${{ inputs.classify }}
+          CONFIRM_EXPENSIVE: ${{ inputs.confirm_expensive }}
+        run: |
+          if { [ "$SKIP_ANALYSIS" != "true" ] || [ "$CLASSIFY" = "true" ]; } && [ "$CONFIRM_EXPENSIVE" != "true" ]; then
+            echo "::error::Analysis or classification requires confirm_expensive."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Restore shared operational history and request caches
+        id: state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/radar.sqlite3
+            data/radar.sqlite3-wal
+            .cache/research-radar
+          key: radar-state-${{ runner.os }}-backfill-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            radar-state-${{ runner.os }}-
+      - run: uv sync --locked
+      - name: Prepare review branch before generating content
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="research-radar/automated-drafts"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            git switch -c "$branch" --track "origin/$branch"
+            git merge --no-edit "origin/$BASE_BRANCH"
+          else
+            git switch -c "$branch"
+          fi
+      - name: Check implementation
+        run: |
+          uv run ruff check .
+          uv run mypy
+          uv run pytest -q
+      - name: Backfill resumable ISO weeks
+        timeout-minutes: 330
+        env:
+          FROM_DATE: ${{ inputs.from_date }}
+          TO_DATE: ${{ inputs.to_date }}
+          WORKERS: ${{ inputs.workers }}
+          SKIP_ANALYSIS: ${{ inputs.skip_analysis }}
+          SKIP_ENRICHMENT: ${{ inputs.skip_enrichment }}
+          CLASSIFY: ${{ inputs.classify }}
+          CONFIRM_EXPENSIVE: ${{ inputs.confirm_expensive }}
+          PUBLICATION_PROXY: ${{ inputs.publication_proxy }}
+        run: |
+          args=(backfill --from "$FROM_DATE" --workers "$WORKERS" --resume --dry-run)
+          if [ -n "$TO_DATE" ]; then args+=(--to "$TO_DATE"); fi
+          if [ "$SKIP_ANALYSIS" = "true" ]; then args+=(--skip-analysis); else args+=(--analyze); fi
+          if [ "$SKIP_ENRICHMENT" = "true" ]; then args+=(--skip-enrichment); fi
+          if [ "$CLASSIFY" = "true" ]; then args+=(--classify); fi
+          if [ "$CONFIRM_EXPENSIVE" = "true" ]; then args+=(--confirm-expensive); fi
+          if [ "$PUBLICATION_PROXY" = "true" ]; then args+=(--publication-proxy); fi
+          uv run research-radar "${args[@]}"
+      - name: Validate canonical output
+        run: uv run research-radar validate
+      - name: Commit only generated content and open a draft review PR
+        if: inputs.create_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          branch="research-radar/automated-drafts"
+          for directory in data/radars data/papers data/rankings data/articles/drafts; do
+            if [ -d "$directory" ]; then git add -- "$directory"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "No generated content changes."
+            exit 0
+          fi
+          git commit -m "Backfill AI Research Radar review drafts" \
+            -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+          git push origin "$branch"
+          existing="$(gh pr list --head "$branch" --base "$BASE_BRANCH" --state open --json number --jq 'length')"
+          if [ "$existing" -eq 0 ]; then
+            gh pr create --draft --head "$branch" --base "$BASE_BRANCH" \
+              --title "AI Research Radar: historical review drafts" \
+              --body "Historical AI-assisted Radars for human review. Unknown historical scores are not weak weeks; approximate publication proxies are labelled. Check cutoff provenance, primary sources, critic issues, and coverage. Michał's take remains human-authored. This PR never approves or automatically publishes content."
+          fi
+      - name: Back up operational checkpoints
+        if: always()
+        run: |
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          source = Path("data/radar.sqlite3")
+          if source.exists():
+              destination = Path("data/operational/radar.sqlite3")
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src:
+                  with sqlite3.connect(destination) as dst:
+                      src.backup(dst)
+          PY
+      - name: Save state even after partial failure for the next resume
+        if: always() && steps.state.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/radar.sqlite3
+            data/radar.sqlite3-wal
+            .cache/research-radar
+          key: ${{ steps.state.outputs.cache-primary-key }}
+      - name: Save generated content and operational checkpoint artifacts
+        if: always() && steps.state.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-radar-backfill-${{ github.run_id }}
+          path: |
+            data/radars
+            data/papers
+            data/rankings
+            data/articles/drafts
+            data/operational/radar.sqlite3
+          retention-days: 30

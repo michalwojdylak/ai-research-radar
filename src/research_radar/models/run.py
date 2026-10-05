@@ -29,3 +29,5 @@ class RunReport(RadarModel):
     generated: int = 0
     skipped_analysis: int = 0
     failures: list[PipelineFailure] = Field(default_factory=list)
+    period_id: str | None = None
+    is_preview: bool = False

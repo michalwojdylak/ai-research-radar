@@ -2,7 +2,7 @@ name: AI Research Radar
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 7 * * 1"
   workflow_dispatch:
     inputs:
       create_pr:
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 240
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -29,7 +29,6 @@ jobs:
       HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
       OPENALEX_EMAIL: ${{ secrets.OPENALEX_EMAIL }}
       DRY_RUN: "true"
-      RESEARCH_DAYS: "7"
       TOP_PAPERS: "10"
     steps:
       - uses: actions/checkout@v4
@@ -41,17 +40,18 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       - name: Restore operational history and request caches
-        uses: actions/cache@v4
+        id: state
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/radar.sqlite3
+            data/radar.sqlite3-wal
             .cache/research-radar
-          key: radar-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: radar-state-${{ runner.os }}-weekly-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             radar-state-${{ runner.os }}-
       - run: uv sync --locked
       - name: Prepare review branch without overwriting human edits
-        if: github.event_name == 'schedule' || inputs.create_pr
         env:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -70,16 +70,19 @@ jobs:
           uv run ruff check .
           uv run mypy
           uv run pytest -q
-      - name: Discover, enrich, rank, analyze, critique, and generate drafts
+      - name: Generate the previous complete ISO-week Radar and review drafts
+        timeout-minutes: 210
         run: uv run research-radar run --dry-run
       - name: Validate canonical output
         run: uv run research-radar validate
       - name: Save generated content as an artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: research-radar-content
           path: |
             data/papers
+            data/radars
             data/rankings
             data/articles/drafts
           retention-days: 30
@@ -90,7 +93,11 @@ jobs:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           branch="research-radar/automated-drafts"
-          git add data/papers data/rankings data/articles/drafts
+          for directory in data/radars data/papers data/rankings data/articles/drafts; do
+            if [ -d "$directory" ]; then
+              git add -- "$directory"
+            fi
+          done
           if git diff --cached --quiet; then
             echo "No generated content changes."
             exit 0
@@ -104,3 +111,33 @@ jobs:
               --title "AI Research Radar: new research drafts" \
               --body "AI-assisted research drafts for human review. Check primary sources, critic issues, numerical claims, and ranking coverage. Michał's take remains human-authored. Merging this PR does not automatically publish to the website."
           fi
+      - name: Back up operational checkpoints
+        if: always()
+        run: |
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          source = Path("data/radar.sqlite3")
+          if source.exists():
+              destination = Path("data/operational/radar.sqlite3")
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src:
+                  with sqlite3.connect(destination) as dst:
+                      src.backup(dst)
+          PY
+      - name: Save resumable operational history even after partial failure
+        if: always() && steps.state.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/radar.sqlite3
+            data/radar.sqlite3-wal
+            .cache/research-radar
+          key: ${{ steps.state.outputs.cache-primary-key }}
+      - name: Save operational checkpoint backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-radar-operational-history
+          path: data/operational/radar.sqlite3
+          retention-days: 30

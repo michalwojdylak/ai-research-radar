@@ -13,6 +13,7 @@ class MetricsSnapshot(RadarModel):
     github_url: str | None = None
     citation_source: str | None = None
     hf_paper_url: str | None = None
+    hf_trending: bool | None = None
 
 
 class PaperMetrics(RadarModel):

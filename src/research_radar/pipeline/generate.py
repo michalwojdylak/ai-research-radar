@@ -73,6 +73,8 @@ def to_research_paper(record: PaperRecord, analysis: AnalysisResult, slug: str) 
         analysis_model=analysis.model,
         critic_model=analysis.critic_model,
         prompt_versions=analysis.prompt_versions,
+        arxiv_id=paper.arxiv_id,
+        updated_at=paper.updated_at,
     )
 
 
@@ -213,11 +215,19 @@ def extract_human_block(markdown: str) -> str:
     raise ValueError("Existing Markdown has no editorial boundary; refusing to overwrite")
 
 
-def generate(repository: Repository, settings: Settings, report: RunReport) -> list[Path]:
-    rankings = repository.latest_rankings()
-    if rankings is None:
-        logger.warning("No rankings available; run rank before generate.")
-        return []
+def generate(
+    repository: Repository,
+    settings: Settings,
+    report: RunReport,
+    *,
+    paper_ids: list[str] | None = None,
+) -> list[Path]:
+    if paper_ids is None:
+        rankings = repository.latest_rankings()
+        if rankings is None:
+            logger.warning("No rankings available; run rank before generate.")
+            return []
+        paper_ids = rankings.selected_ids[: settings.top_papers]
     existing_by_id: dict[str, tuple[Path, ResearchPaper]] = {}
     for existing_path in (settings.data_dir / "papers").rglob("*.json"):
         previous = ResearchPaper.model_validate_json(existing_path.read_text(encoding="utf-8"))
@@ -225,7 +235,7 @@ def generate(repository: Repository, settings: Settings, report: RunReport) -> l
             raise ValueError("Duplicate canonical paper IDs in generated JSON")
         existing_by_id[previous.id] = (existing_path, previous)
     paths: list[Path] = []
-    for paper_id in rankings.selected_ids[: settings.top_papers]:
+    for paper_id in dict.fromkeys(paper_ids):
         record = repository.get_record(paper_id)
         analysis = repository.latest_analysis(paper_id)
         if record is None or analysis is None:
@@ -284,4 +294,7 @@ def validate_generated(data_dir: Path) -> int:
     for path in sorted((data_dir / "rankings").glob("*.json")):
         Rankings.model_validate_json(path.read_text(encoding="utf-8"))
         count += 1
+    from research_radar.radars.output import validate_radar_files
+
+    count += validate_radar_files(data_dir)
     return count

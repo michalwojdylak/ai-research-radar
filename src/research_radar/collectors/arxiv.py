@@ -22,6 +22,10 @@ MAX_DISCOVERY_PAGES = 100
 MAX_DISCOVERY_PAPERS = 10_000
 
 
+class HistoricalDiscoveryError(ValueError):
+    """The API did not establish complete coverage of a historical interval."""
+
+
 def _date(value: object) -> datetime:
     if not isinstance(value, str):
         raise ValueError("Missing arXiv timestamp")
@@ -76,9 +80,11 @@ def _entry(entry: Mapping[str, Any]) -> Paper:
 
 
 class ArxivCollector:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.AsyncClient, *, http: CachedHTTP | None = None
+    ) -> None:
         self.settings = settings
-        self.http = CachedHTTP(settings, client)
+        self.http = http or CachedHTTP(settings, client)
 
     async def discover(
         self, *, days: int | None = None, now: datetime | None = None
@@ -89,11 +95,25 @@ class ArxivCollector:
         end = now or datetime.now(UTC)
         end = end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC)
         start_date = end - timedelta(days=window)
+        return await self._discover(start=start_date, end=end, historical=False)
+
+    async def discover_period(self, *, start: datetime, end: datetime) -> list[Paper]:
+        start = start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
+        end = end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC)
+        if start >= end:
+            raise ValueError("Historical discovery requires start before exclusive end")
+        return await self._discover(start=start, end=end, historical=True)
+
+    async def _discover(self, *, start: datetime, end: datetime, historical: bool) -> list[Paper]:
         categories = " OR ".join(f"cat:{category}" for category in self.settings.arxiv_categories)
-        query = f"({categories}) AND submittedDate:[{start_date:%Y%m%d%H%M} TO {end:%Y%m%d%H%M}]"
+        # arXiv ranges include both minute-resolution endpoints. Fetch the containing
+        # minutes, then enforce exact timestamps locally (and exclude midnight at end).
+        query_end = end - timedelta(microseconds=1) if historical else end
+        query = f"({categories}) AND submittedDate:[{start:%Y%m%d%H%M} TO {query_end:%Y%m%d%H%M}]"
         papers: dict[str, Paper] = {}
         seen_entries: set[str] = set()
         offset = 0
+        expected_total: int | None = None
         for _ in range(MAX_DISCOVERY_PAGES):
             response = await self.http.get(
                 ARXIV_API,
@@ -108,11 +128,19 @@ class ArxivCollector:
             feed = feedparser.parse(response.content)
             if feed.bozo:
                 raise ValueError("Malformed arXiv Atom response")
+            total_value = feed.feed.get("opensearch_totalresults")
+            total = int(total_value) if total_value is not None else None
+            if total is not None:
+                expected_total = total
             entries = feed.entries
             if not entries:
+                if historical and expected_total is not None and offset < expected_total:
+                    raise HistoricalDiscoveryError("arXiv historical pagination ended early")
                 break
             identifiers = {str(entry.get("id", "")) for entry in entries}
             if identifiers <= seen_entries:
+                if historical:
+                    raise HistoricalDiscoveryError("arXiv historical pagination repeated a page")
                 logger.warning("arxiv pagination repeated page")
                 break
             seen_entries.update(identifiers)
@@ -122,7 +150,10 @@ class ArxivCollector:
                 except (ValidationError, ValueError, KeyError, TypeError, AttributeError) as error:
                     logger.warning("arxiv entry invalid type=%s", type(error).__name__)
                     continue
-                if start_date <= paper.published_at <= end and set(paper.categories).intersection(
+                within_range = start <= paper.published_at and (
+                    paper.published_at < end if historical else paper.published_at <= end
+                )
+                if within_range and set(paper.categories).intersection(
                     self.settings.arxiv_categories
                 ):
                     old = papers.get(paper.id)
@@ -136,15 +167,19 @@ class ArxivCollector:
                         papers[paper.id] = paper
             offset += len(entries)
             if len(papers) >= MAX_DISCOVERY_PAPERS:
+                if historical:
+                    raise HistoricalDiscoveryError("arXiv historical discovery paper limit reached")
                 logger.warning("arxiv discovery paper limit reached")
                 break
-            total_value = feed.feed.get("opensearch_totalresults")
-            total = int(total_value) if total_value is not None else None
+            if historical:
+                total = expected_total
             if total is not None and offset >= total:
                 break
             if total is None and len(entries) < self.settings.arxiv_page_size:
                 break
         else:
+            if historical:
+                raise HistoricalDiscoveryError("arXiv historical discovery page limit reached")
             logger.warning("arxiv discovery page limit reached")
         return sorted(
             papers.values(), key=lambda paper: (paper.published_at, paper.id), reverse=True

@@ -1,0 +1,26 @@
+{
+  "year": 2024,
+  "month": 1,
+  "weeks": [
+    {
+      "id": "2024-W01",
+      "description": "Two exceptional papers published January 1–7",
+      "scores": [95, 94]
+    },
+    {
+      "id": "2024-W02",
+      "description": "Weak candidates published January 8–14; none meet the threshold",
+      "scores": [60, 59, 55, 52, 50]
+    },
+    {
+      "id": "2024-W03",
+      "description": "One exceptional paper published January 15–21",
+      "scores": [96]
+    },
+    {
+      "id": "2024-W04",
+      "description": "Average papers published January 22–28",
+      "scores": [78, 76, 74]
+    }
+  ]
+}

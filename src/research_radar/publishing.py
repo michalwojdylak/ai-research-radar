@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from research_radar.config import Settings
 from research_radar.models.analysis import ResearchPaper
+from research_radar.models.radars import MonthlyRadar, WeeklyRadar, YearlyRadar
 from research_radar.pipeline.generate import extract_human_block
 
 
@@ -49,6 +51,32 @@ class GitBlob(BaseModel):
     model_config = ConfigDict(extra="ignore")
     encoding: str
     content: str
+
+
+def _editorial_document(
+    content: str | bytes, path: str
+) -> ResearchPaper | WeeklyRadar | MonthlyRadar | YearlyRadar:
+    if not path.startswith("data/radars/"):
+        return ResearchPaper.model_validate_json(content)
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise ValueError("Expected a structured Radar document")
+    kind = data.get("type")
+    document: WeeklyRadar | MonthlyRadar | YearlyRadar
+    if kind == "weekly_radar":
+        document = WeeklyRadar.model_validate(data)
+        if document.is_preview:
+            raise ValueError("Preview Radars must remain local, not be submitted as final drafts")
+    elif kind == "monthly_radar":
+        document = MonthlyRadar.model_validate(data)
+    elif kind == "yearly_radar":
+        document = YearlyRadar.model_validate(data)
+    else:
+        raise ValueError("Unknown Radar document type")
+    expected_mode = "retrospective" if "/retrospective/" in path else "publication"
+    if document.mode != expected_mode:
+        raise ValueError("Radar mode does not match its destination")
+    return document
 
 
 async def create_review_pr(
@@ -95,9 +123,13 @@ async def create_review_pr(
     entries: list[dict[str, str]] = []
     for path in sorted(set(paths)):
         relative = path.resolve().relative_to(Path.cwd().resolve()).as_posix()
-        if not relative.startswith(("data/papers/", "data/articles/drafts/", "data/rankings/")):
+        if not relative.startswith(
+            ("data/papers/", "data/articles/drafts/", "data/rankings/", "data/radars/")
+        ) or (relative.startswith("data/radars/") and "/previews/" in relative):
             raise ValueError("Only generated research files may be submitted")
         content = path.read_bytes()
+        if relative.startswith("data/radars/") and relative.endswith(".json"):
+            _editorial_document(content, relative)
         blob_sha = hashlib.sha1(
             f"blob {len(content)}\0".encode() + content, usedforsecurity=False
         ).hexdigest()
@@ -112,8 +144,8 @@ async def create_review_pr(
                 "".join(previous_blob.content.splitlines()), validate=True
             ).decode("utf-8")
             if relative.endswith(".json"):
-                previous = ResearchPaper.model_validate_json(previous_text)
-                current = ResearchPaper.model_validate_json(content)
+                previous = _editorial_document(previous_text, relative)
+                current = _editorial_document(content, relative)
                 if previous.status in {"approved", "published"}:
                     raise ValueError("Remote content has human approval; refusing to overwrite")
                 if previous.michaels_take and previous.michaels_take != current.michaels_take:

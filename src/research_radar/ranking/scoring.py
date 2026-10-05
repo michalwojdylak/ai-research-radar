@@ -181,4 +181,11 @@ def score_record(record: PaperRecord, weights: ScoringWeights, now: datetime) ->
         importance_breakdown=importance,
         trending_breakdown=trending,
         overall_breakdown=overall,
+        scored_at=now,
+        publication_score=record.scores.publication_score,
+        publication_data_cutoff=record.scores.publication_data_cutoff,
+        publication_basis=record.scores.publication_basis,
+        retrospective_score=record.scores.retrospective_score,
+        retrospective_data_cutoff=record.scores.retrospective_data_cutoff,
+        retrospective_breakdown=record.scores.retrospective_breakdown.model_copy(deep=True),
     )

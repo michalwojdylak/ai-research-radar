@@ -11,15 +11,22 @@ logger = logging.getLogger(__name__)
 
 
 async def analyze(
-    repository: Repository, service: AnalysisService | None, settings: Settings, report: RunReport
+    repository: Repository,
+    service: AnalysisService | None,
+    settings: Settings,
+    report: RunReport,
+    *,
+    paper_ids: list[str] | None = None,
 ) -> None:
-    rankings = repository.latest_rankings()
-    if rankings is None:
-        logger.warning("No rankings available; run rank before analyze.")
-        return
+    if paper_ids is None:
+        rankings = repository.latest_rankings()
+        if rankings is None:
+            logger.warning("No rankings available; run rank before analyze.")
+            return
+        paper_ids = rankings.selected_ids
     records = [
         record
-        for paper_id in rankings.selected_ids[: settings.top_papers]
+        for paper_id in paper_ids[: settings.top_papers]
         if (record := repository.get_record(paper_id)) is not None
     ]
     if service is None:

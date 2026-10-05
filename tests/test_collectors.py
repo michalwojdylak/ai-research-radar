@@ -163,6 +163,98 @@ async def _no_spacing(self: CachedHTTP) -> None:
 
 
 @pytest.mark.asyncio
+async def test_arxiv_historical_query_clips_utc_exclusive_end_and_original_publication(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(CachedHTTP, "_arxiv_wait", _no_spacing)
+    requests: list[httpx.Request] = []
+    body = _atom(
+        [
+            _entry("2301.00001v3", published="2023-01-01T00:00:00Z"),
+            _entry("2301.00002", published="2023-01-01T23:59:59Z"),
+            _entry("2301.00003", published="2023-01-02T00:00:00Z"),
+            _entry("2212.00004v2", published="2022-12-31T23:59:59Z"),
+        ],
+        total=4,
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        papers = await ArxivCollector(settings, client).discover_period(
+            start=datetime.fromisoformat("2023-01-01T02:00:00+02:00"),
+            end=datetime.fromisoformat("2023-01-02T02:00:00+02:00"),
+        )
+    assert "submittedDate:[202301010000 TO 202301012359]" in requests[0].url.params["search_query"]
+    assert {paper.id for paper in papers} == {"2301.00001", "2301.00002"}
+    assert next(p for p in papers if p.id == "2301.00001").arxiv_id == "2301.00001v3"
+    assert papers[0].updated_at == datetime(2025, 1, 3, 12, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["repeated", "page_limit", "paper_limit", "early_end"])
+async def test_arxiv_historical_incomplete_pagination_raises(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import research_radar.collectors.arxiv as arxiv_module
+
+    monkeypatch.setattr(CachedHTTP, "_arxiv_wait", _no_spacing)
+    settings.arxiv_page_size = 1
+    if kind == "page_limit":
+        monkeypatch.setattr(arxiv_module, "MAX_DISCOVERY_PAGES", 1)
+    if kind == "paper_limit":
+        monkeypatch.setattr(arxiv_module, "MAX_DISCOVERY_PAPERS", 1)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        entries = (
+            []
+            if kind == "early_end" and request.url.params["start"] == "1"
+            else [_entry("2501.12345")]
+        )
+        return httpx.Response(200, text=_atom(entries, total=3))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(arxiv_module.HistoricalDiscoveryError):
+            await ArxivCollector(settings, client).discover_period(
+                start=datetime(2025, 1, 1, tzinfo=UTC),
+                end=datetime(2025, 1, 6, tzinfo=UTC),
+            )
+
+
+@pytest.mark.asyncio
+async def test_arxiv_historical_shared_http_spacing_across_weeks(settings: Settings) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=_atom([])))
+    ) as client:
+        http = CachedHTTP(settings, client)
+        first = ArxivCollector(settings, client, http=http)
+        second = ArxivCollector(settings, client, http=http)
+        assert first.http is second.http
+        await first.discover_period(
+            start=datetime(2023, 1, 1, tzinfo=UTC), end=datetime(2023, 1, 2, tzinfo=UTC)
+        )
+        first_request = http._last_arxiv_request
+        await second.discover_period(
+            start=datetime(2023, 1, 2, tzinfo=UTC), end=datetime(2023, 1, 9, tzinfo=UTC)
+        )
+        assert first_request is not None and http._last_arxiv_request is not None
+        assert http._last_arxiv_request - first_request >= 3.1
+
+
+@pytest.mark.asyncio
+async def test_arxiv_historical_invalid_bounds_do_not_request(settings: Settings) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("No request for invalid dates"))
+    ) as client:
+        with pytest.raises(ValueError, match="exclusive end"):
+            await ArxivCollector(settings, client).discover_period(
+                start=datetime(2023, 1, 2), end=datetime(2023, 1, 1)
+            )
+
+
+@pytest.mark.asyncio
 async def test_arxiv_preserves_highest_version_on_equal_dates_without_pdf_links(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

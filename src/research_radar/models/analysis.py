@@ -127,6 +127,8 @@ class ResearchPaper(AnalysisContent):
     analysis_model: str
     critic_model: str
     prompt_versions: PromptVersions
+    arxiv_id: str | None = None
+    updated_at: datetime | None = None
 
     @model_validator(mode="after")
     def publication_gate(self) -> "ResearchPaper":

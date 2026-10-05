@@ -22,3 +22,11 @@ def test_run_overrides() -> None:
 def test_conflicting_write_flags_are_rejected() -> None:
     with pytest.raises(SystemExit):
         parser().parse_args(["--dry-run", "--no-dry-run"])
+
+
+def test_legacy_root_options_before_command_remain_supported() -> None:
+    options = parser().parse_args(["--days", "7", "--top", "10", "--dry-run", "discover"])
+    assert options.command == "discover"
+    assert options.days == 7
+    assert options.top == 10
+    assert options.dry_run
